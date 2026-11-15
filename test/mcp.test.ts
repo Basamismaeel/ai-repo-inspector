@@ -1,22 +1,28 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer } from "../src/mcp.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { InspectorError } from "../src/errors.js";
+import { createServer, parseServerArgs, type ServerOptions } from "../src/mcp.js";
 import { cleanupTempDirs, makeSampleRepo, makeTempDir } from "./helpers.js";
 
 type ToolResult = { isError?: boolean; text: string };
 
-async function connect(): Promise<Client> {
+async function connect(options: ServerOptions = {}): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await createServer().connect(serverTransport);
+  await createServer(options).connect(serverTransport);
   const client = new Client({ name: "test-client", version: "0.0.0" });
   await client.connect(clientTransport);
   return client;
 }
 
 /** Calls the tool the way an AI client would and flattens the result. */
-async function callReview(args: Record<string, unknown>): Promise<ToolResult> {
-  const client = await connect();
+async function callReview(
+  args: Record<string, unknown>,
+  options: ServerOptions = {},
+): Promise<ToolResult> {
+  const client = await connect(options);
   try {
     const result = await client.callTool({ name: "review_repository", arguments: args });
     const content = result.content as Array<{ type: string; text?: string }>;
@@ -74,5 +80,85 @@ describe("MCP review_repository", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("Not a Git repository");
+  });
+});
+
+describe("MCP validation commands", () => {
+  // A command that leaves a file behind, so a test can prove it never ran.
+  const leaveMarker = `node -e "require('fs').writeFileSync('marker.txt', 'ran')"`;
+  const sayHello = `node -e "console.log('hello from validation')"`;
+
+  it("refuses every command when the server has no approved list", async () => {
+    const repo = makeSampleRepo();
+
+    const result = await callReview({ repo_path: repo, validation_commands: [leaveMarker] });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("not allowed");
+    expect(existsSync(join(repo, "marker.txt"))).toBe(false);
+  });
+
+  it("runs a command that is on the approved list", async () => {
+    const repo = makeSampleRepo();
+
+    const result = await callReview(
+      { repo_path: repo, validation_commands: [sayHello] },
+      { allowedValidations: [sayHello] },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("hello from validation");
+    expect(result.text).toContain("- passed");
+  });
+
+  it("refuses a command that only starts with an approved one", async () => {
+    const repo = makeSampleRepo();
+
+    const result = await callReview(
+      { repo_path: repo, validation_commands: [`${sayHello} && ${leaveMarker}`] },
+      { allowedValidations: [sayHello] },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(existsSync(join(repo, "marker.txt"))).toBe(false);
+  });
+
+  it("runs nothing at all when one command in the request is refused", async () => {
+    const repo = makeSampleRepo();
+
+    const result = await callReview(
+      { repo_path: repo, validation_commands: [leaveMarker, "echo not-approved"] },
+      { allowedValidations: [leaveMarker] },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Nothing was run");
+    expect(existsSync(join(repo, "marker.txt"))).toBe(false);
+  });
+
+  it("tells the agent which commands are approved", async () => {
+    const client = await connect({ allowedValidations: ["npm test"] });
+    const { tools } = await client.listTools();
+    await client.close();
+
+    const properties = tools[0].inputSchema.properties as Record<string, { description?: string }>;
+    expect(properties.validation_commands.description).toContain('"npm test"');
+  });
+});
+
+describe("parseServerArgs", () => {
+  it("has no approved commands by default", () => {
+    expect(parseServerArgs([])).toEqual({ allowedValidations: [] });
+  });
+
+  it("collects each --allow-validation value", () => {
+    expect(parseServerArgs(["--allow-validation", "npm test", "--allow-validation", "npm run lint"])).toEqual({
+      allowedValidations: ["npm test", "npm run lint"],
+    });
+  });
+
+  it("rejects unknown options and missing values", () => {
+    expect(() => parseServerArgs(["--allow-everything"])).toThrow(InspectorError);
+    expect(() => parseServerArgs(["--allow-validation"])).toThrow(InspectorError);
   });
 });
