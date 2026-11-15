@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
-import { reviewRepository } from "./core.js";
+import { allValidationsPassed, inspectRepository } from "./core.js";
+import { markdownReport } from "./report.js";
 
 type Args = {
   command: string;
@@ -15,7 +16,7 @@ function parseArgs(argv: string[]): Args {
   for (let index = 1; index < argv.length; index++) {
     const token = argv[index];
     if (token === "--repo") {
-      args.repositoryPath = argv[++index]?.split(" ")[0];
+      args.repositoryPath = argv[++index];
     } else if (token === "--base-ref") {
       args.baseRef = argv[++index];
     } else if (token === "--format") {
@@ -35,14 +36,21 @@ async function main() {
     return;
   }
 
-  const report = await reviewRepository({
+  const result = await inspectRepository({
     repositoryPath: args.repositoryPath,
     baseRef: args.baseRef,
     validationCommands: args.validations,
     format: args.format,
   });
-  writeFileSync("review-report.md", report, "utf8");
+  writeFileSync("review-report.md", markdownReport(result), "utf8");
   console.log("Review report written to review-report.md");
+
+  if (!allValidationsPassed(result)) {
+    // The review itself worked, so the report exists. Exit code 2 lets scripts
+    // and CI tell "a validation failed" apart from "the tool could not run" (1).
+    console.error("One or more validation commands did not pass.");
+    process.exitCode = 2;
+  }
 }
 
 main().catch((error) => {
