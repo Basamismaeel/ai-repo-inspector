@@ -1,4 +1,4 @@
-import { readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { InspectorError } from "../src/errors.js";
@@ -65,6 +65,63 @@ describe("changedFiles", () => {
     commitAll(repo, "odd name");
 
     expect(changedFiles(repo)).toEqual([{ path: "my file ü.txt", status: "added" }]);
+  });
+});
+
+describe("changedFiles with work that is not committed yet", () => {
+  it("includes edits to tracked files that are not committed", () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "a.txt"), "edited but not committed\n");
+
+    expect(changedFiles(repo)).toEqual([{ path: "a.txt", status: "modified" }]);
+  });
+
+  it("includes staged new files and uncommitted deletions", () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "staged.txt"), "new\n");
+    gitIn(repo, "add", "staged.txt");
+    rmSync(join(repo, "a.txt"));
+
+    expect(changedFiles(repo)).toEqual([
+      { path: "a.txt", status: "deleted" },
+      { path: "staged.txt", status: "added" },
+    ]);
+  });
+
+  it("reports new files Git does not track as untracked", () => {
+    const repo = makeSampleRepo();
+    writeFileSync(join(repo, "notes.txt"), "new file\n");
+
+    expect(changedFiles(repo)).toEqual([
+      { path: "a.txt", status: "modified" },
+      { path: "c.txt", status: "added" },
+      { path: "notes.txt", status: "untracked" },
+    ]);
+  });
+
+  it("leaves out files matched by .gitignore", () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, ".gitignore"), "*.log\n");
+    commitAll(repo, "ignore logs");
+    writeFileSync(join(repo, "debug.log"), "noise\n");
+
+    expect(changedFiles(repo)).toEqual([]);
+  });
+
+  it("reports root-relative paths when given a sub-directory", () => {
+    const repo = initRepo();
+    mkdirSync(join(repo, "sub"));
+    writeFileSync(join(repo, "sub", "inner.txt"), "x\n");
+    writeFileSync(join(repo, "outer.txt"), "y\n");
+
+    expect(changedFiles(join(repo, "sub"))).toEqual([
+      { path: "outer.txt", status: "untracked" },
+      { path: "sub/inner.txt", status: "untracked" },
+    ]);
+  });
+
+  it("returns nothing for a clean checkout of the base branch", () => {
+    expect(changedFiles(initRepo())).toEqual([]);
   });
 });
 

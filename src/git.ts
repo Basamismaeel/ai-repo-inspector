@@ -45,10 +45,13 @@ export function resolveRepository(repositoryPath: unknown): string {
     throw new InspectorError(`Repository path is not a directory: ${absolutePath}`);
   }
 
+  let insideWorkTree = false;
   try {
-    git(absolutePath, ["rev-parse", "--is-inside-work-tree"]);
+    insideWorkTree = git(absolutePath, ["rev-parse", "--is-inside-work-tree"]).trim() === "true";
   } catch (error) {
     if (error instanceof InspectorError) throw error;
+  }
+  if (!insideWorkTree) {
     throw new InspectorError(`Not a Git repository: ${absolutePath}`);
   }
   return absolutePath;
@@ -131,12 +134,42 @@ function parseNameStatus(output: string): ChangedFile[] {
   return files;
 }
 
-/** Lists the files that changed on HEAD since it branched off from the base ref. */
+/**
+ * Lists everything that differs from the base ref right now:
+ *
+ * - changes committed on HEAD since it branched off from the base,
+ * - changes to tracked files that are staged or not yet committed,
+ * - new files Git does not track yet (reported as "untracked").
+ *
+ * Files matched by .gitignore are left out. Paths are relative to the
+ * repository root.
+ */
 export function changedFiles(repositoryPath: string, baseRef?: string): ChangedFile[] {
   if (commitOf(repositoryPath, "HEAD") === undefined) {
     throw new InspectorError(`The repository has no commits yet: ${repositoryPath}`);
   }
   const baseCommit = resolveBaseCommit(repositoryPath, baseRef);
-  const output = git(repositoryPath, ["diff", "--name-status", "-z", `${baseCommit}...HEAD`, "--"]);
-  return parseNameStatus(output);
+
+  // Run from the repository root so both commands report root-relative paths
+  // even when the caller pointed at a sub-directory.
+  const root = git(repositoryPath, ["rev-parse", "--show-toplevel"]).trim();
+
+  let forkPoint: string;
+  try {
+    forkPoint = git(root, ["merge-base", baseCommit, "HEAD"]).trim();
+  } catch (error) {
+    if (error instanceof InspectorError) throw error;
+    throw new InspectorError("HEAD and the base ref have no common history to compare.");
+  }
+
+  // Comparing the fork point with the working tree (no second commit given)
+  // covers committed, staged and unstaged changes to tracked files in one go.
+  const tracked = parseNameStatus(git(root, ["diff", "--name-status", "-z", forkPoint, "--"]));
+
+  const untracked: ChangedFile[] = git(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    .split("\0")
+    .filter((path) => path !== "")
+    .map((path) => ({ path, status: "untracked" }));
+
+  return [...tracked, ...untracked];
 }
