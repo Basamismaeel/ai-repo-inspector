@@ -15,7 +15,11 @@ function statusLabel(result: ValidationResult): string {
 export function markdownReport(input: ReportInput): string {
   const lines = [`# Review Report: ${input.repositoryPath}`, "", "## Changed files"];
   for (const file of input.changedFiles) {
-    lines.push(`- ${file.path} (${file.status})`);
+    const detail =
+      file.status === "renamed" && file.previousPath !== undefined
+        ? `renamed from ${file.previousPath}`
+        : file.status;
+    lines.push(`- ${file.path} (${detail})`);
   }
   lines.push("", "## Validation output");
   for (const result of input.validationResults) {

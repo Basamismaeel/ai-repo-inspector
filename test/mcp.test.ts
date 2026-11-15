@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { InspectorError } from "../src/errors.js";
 import { createServer, parseServerArgs, type ServerOptions } from "../src/mcp.js";
@@ -80,6 +80,18 @@ describe("MCP review_repository", () => {
 
     expect(result.isError).toBe(true);
     expect(result.text).toContain("Not a Git repository");
+  });
+});
+
+describe("MCP base_ref", () => {
+  it("refuses a base_ref that looks like a git option and writes no file", async () => {
+    const repo = makeSampleRepo();
+
+    const result = await callReview({ repo_path: repo, base_ref: "--output=injected.txt" });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Invalid base ref");
+    expect(readdirSync(repo).filter((name) => name.startsWith("injected"))).toEqual([]);
   });
 });
 

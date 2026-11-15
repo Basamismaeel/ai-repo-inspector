@@ -1,6 +1,8 @@
 export type ChangedFile = {
   path: string;
-  status: "added" | "modified" | "deleted" | "untracked";
+  status: "added" | "modified" | "deleted" | "renamed" | "untracked";
+  /** The old path, when the file was renamed. */
+  previousPath?: string;
 };
 
 export type ValidationResult = {
