@@ -43,4 +43,69 @@ describe("inspector review (CLI)", () => {
     expect(run.report).toContain("### exit 1 - failed (exit code 1)");
     expect(run.stderr).not.toContain("Fatal error");
   });
+
+  it("accepts a repository path that contains a space", () => {
+    const repo = makeSampleRepo();
+    expect(repo).toContain(" ");
+
+    const run = runCli("review", "--repo", repo);
+
+    expect(run.exitCode).toBe(0);
+    expect(run.report).toContain(`# Review Report: ${repo}`);
+  });
+
+  it("prints usage and exits 0 for --help", () => {
+    const run = runCli("--help");
+
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout).toContain("Usage: inspector review");
+  });
+});
+
+describe("inspector review (CLI) with bad input", () => {
+  /** Every failure should be one clear line: exit 1, no report, no stack trace. */
+  function expectCleanError(run: ReturnType<typeof runCli>, message: string) {
+    expect(run.stderr).toContain(message);
+    expect(run.stderr).not.toMatch(/^\s+at /m);
+    expect(run.exitCode).toBe(1);
+    expect(run.report).toBeUndefined();
+  }
+
+  it("rejects a misspelled option instead of ignoring it", () => {
+    const run = runCli("review", "--repo", makeSampleRepo(), "--vaildate", "npm test");
+
+    expectCleanError(run, "Unknown option: --vaildate");
+  });
+
+  it("rejects an option with no value", () => {
+    const run = runCli("review", "--repo", makeSampleRepo(), "--validate");
+
+    expectCleanError(run, "--validate needs a value.");
+  });
+
+  it("requires --repo", () => {
+    expectCleanError(runCli("review"), "--repo <path> is required.");
+  });
+
+  it("rejects an unknown command", () => {
+    expectCleanError(runCli("inspect", "--repo", makeSampleRepo()), "Unknown command: inspect");
+  });
+
+  it("says plainly that json output is not available", () => {
+    const run = runCli("review", "--repo", makeSampleRepo(), "--format", "json");
+
+    expectCleanError(run, "--format json is not supported yet");
+  });
+
+  it("reports a missing repository in one line", () => {
+    const missing = join(makeTempDir(), "nope");
+
+    expectCleanError(runCli("review", "--repo", missing), `Error: Repository path does not exist: ${missing}`);
+  });
+
+  it("reports a bad base ref in one line", () => {
+    const run = runCli("review", "--repo", makeSampleRepo(), "--base-ref", "--output=injected.txt");
+
+    expectCleanError(run, 'Error: Invalid base ref "--output=injected.txt"');
+  });
 });

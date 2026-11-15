@@ -1,46 +1,102 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
 import { allValidationsPassed, inspectRepository } from "./core.js";
+import { describeError, InspectorError } from "./errors.js";
 import { markdownReport } from "./report.js";
 
+const USAGE = `Usage: inspector review --repo <path> [options]
+
+Options:
+  --repo <path>          Git repository to inspect (required)
+  --base-ref <ref>       Branch, tag or commit to compare HEAD against
+                         (default: main, then master, then origin/HEAD)
+  --validate <command>   Shell command to run in the repository; repeatable
+  --format markdown      Report format (only markdown is available)
+  --help                 Show this help
+
+The report is written to review-report.md in the current directory.
+
+Exit codes: 0 = report written and all validations passed
+            1 = the review could not run (bad input, not a repository, ...)
+            2 = report written, but a validation command did not pass`;
+
 type Args = {
-  command: string;
+  help: boolean;
+  command?: string;
   repositoryPath?: string;
   baseRef?: string;
-  format?: "markdown" | "json";
   validations: string[];
 };
 
+/** Reads the value that must follow an option such as `--repo`. */
+function valueOf(option: string, value: string | undefined): string {
+  if (value === undefined || value === "") {
+    throw new InspectorError(`${option} needs a value.`);
+  }
+  return value;
+}
+
+/**
+ * Parses the command line strictly. A typo such as `--vaildate` is an error:
+ * silently ignoring it would skip a check the user believes ran.
+ */
 function parseArgs(argv: string[]): Args {
-  const args: Args = { command: argv[0] ?? "", validations: [] };
+  const args: Args = { help: false, validations: [] };
+  if (argv.includes("--help") || argv.includes("-h")) {
+    args.help = true;
+    return args;
+  }
+
+  args.command = argv[0];
   for (let index = 1; index < argv.length; index++) {
     const token = argv[index];
     if (token === "--repo") {
-      args.repositoryPath = argv[++index];
+      args.repositoryPath = valueOf(token, argv[++index]);
     } else if (token === "--base-ref") {
-      args.baseRef = argv[++index];
-    } else if (token === "--format") {
-      args.format = argv[++index] as Args["format"];
+      args.baseRef = valueOf(token, argv[++index]);
     } else if (token === "--validate") {
-      args.validations.push(argv[++index]);
+      args.validations.push(valueOf(token, argv[++index]));
+    } else if (token === "--format") {
+      const format = valueOf(token, argv[++index]);
+      if (format !== "markdown") {
+        throw new InspectorError(
+          `--format ${format} is not supported yet. Only "markdown" is available.`,
+        );
+      }
+    } else {
+      throw new InspectorError(`Unknown option: ${token}`);
     }
+  }
+
+  if (args.command !== "review") {
+    throw new InspectorError(
+      args.command === undefined ? "Missing command." : `Unknown command: ${args.command}`,
+    );
+  }
+  if (args.repositoryPath === undefined) {
+    throw new InspectorError("--repo <path> is required.");
   }
   return args;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.command !== "review" || !args.repositoryPath) {
-    console.error("Usage: inspector review --repo <path> [--base-ref <ref>] [--validate <command>]");
+async function main(): Promise<void> {
+  let args: Args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`Error: ${describeError(error)}\n\n${USAGE}`);
     process.exitCode = 1;
+    return;
+  }
+  if (args.help) {
+    console.log(USAGE);
     return;
   }
 
   const result = await inspectRepository({
-    repositoryPath: args.repositoryPath,
+    repositoryPath: args.repositoryPath ?? "",
     baseRef: args.baseRef,
     validationCommands: args.validations,
-    format: args.format,
   });
   writeFileSync("review-report.md", markdownReport(result), "utf8");
   console.log("Review report written to review-report.md");
@@ -54,6 +110,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  // One readable line. Stack traces are noise for someone using the tool.
+  console.error(`Error: ${describeError(error)}`);
   process.exitCode = 1;
 });
